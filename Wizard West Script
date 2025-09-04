@@ -1,0 +1,185 @@
+-- // Linoria UI Loader
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/SaveManager.lua"))()
+
+-- // Valores globales (controlados por la UI)
+getgenv().AimEnabled = true
+getgenv().MAX_FOV = 100
+getgenv().SMOOTHNESS = 0.15
+
+-- // Aimlock Pro (Wizard West)
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Camera = Workspace.CurrentCamera
+local localPlayer = Players.LocalPlayer
+
+local lockedTarget = nil
+
+-- Círculo FOV
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = true
+FOVCircle.Radius = getgenv().MAX_FOV
+FOVCircle.Thickness = 1.5
+FOVCircle.Color = Color3.fromRGB(0, 170, 255)
+FOVCircle.Transparency = 0.8
+FOVCircle.Filled = false
+
+RunService.RenderStepped:Connect(function()
+	local viewport = Camera.ViewportSize
+	FOVCircle.Position = Vector2.new(viewport.X/2, viewport.Y/2)
+	FOVCircle.Radius = getgenv().MAX_FOV
+end)
+
+-- Validar Character
+local function isValidCharacter(char)
+	if not char then return false end
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	return humanoid and humanoid.Health > 0
+end
+
+-- Smoothness dinámico según distancia
+local function dynamicSmoothness(dist)
+	if dist < 30 then
+		return 0.25
+	elseif dist < 80 then
+		return 0.15
+	else
+		return 0.08
+	end
+end
+
+-- Obtener posición del pecho con offset + predicción
+local function getChestPosition(character)
+	local torso = character:FindFirstChild("UpperTorso")
+	local chest = torso and torso:FindFirstChild("BodyFrontAttachment")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+
+	if chest and hrp then
+		local pos = chest.WorldPosition
+		local dist = (Camera.CFrame.Position - pos).Magnitude
+
+		local offsetY = 0
+		if dist > 30 then
+			offsetY = math.clamp(-(dist / 40), -4, -1)
+		end
+
+		local velocity = hrp.Velocity * (dist / 200)
+
+		return pos + Vector3.new(0, offsetY, 0) + velocity * 0.1, dist
+	end
+	return nil, nil
+end
+
+-- Buscar jugador más cercano dentro del FOV
+local function findNearestPlayer()
+	local bestChar, bestDist
+	local halfX, halfY = Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2
+
+	for _,plr in ipairs(Players:GetPlayers()) do
+		if plr ~= localPlayer and plr.Character and isValidCharacter(plr.Character) then
+			local pos, dist = getChestPosition(plr.Character)
+			if pos then
+				local screenPos, onScreen = Camera:WorldToViewportPoint(pos)
+				if onScreen then
+					local dx, dy = screenPos.X - halfX, screenPos.Y - halfY
+					local fovDist = math.sqrt(dx*dx + dy*dy)
+					if fovDist <= getgenv().MAX_FOV and (not bestDist or fovDist < bestDist) then
+						bestChar, bestDist = plr.Character, fovDist
+					end
+				end
+			end
+		end
+	end
+
+	return bestChar
+end
+
+-- Click derecho = lock
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton2 and getgenv().AimEnabled then
+		lockedTarget = findNearestPlayer()
+	end
+end)
+
+-- Soltar click derecho = unlock
+UserInputService.InputEnded:Connect(function(input, gp)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		lockedTarget = nil
+	end
+end)
+
+-- Render: mover cámara al pecho
+RunService.RenderStepped:Connect(function()
+	if getgenv().AimEnabled and lockedTarget and lockedTarget.Parent and isValidCharacter(lockedTarget) then
+		local pos, dist = getChestPosition(lockedTarget)
+		if pos then
+			local camPos = Camera.CFrame.Position
+			local desiredCFrame = CFrame.new(camPos, pos)
+
+			local smooth = getgenv().SMOOTHNESS or dynamicSmoothness(dist or 50)
+			Camera.CFrame = Camera.CFrame:Lerp(desiredCFrame, 1 - smooth)
+		else
+			lockedTarget = nil
+		end
+	end
+end)
+
+-- // Linoria UI Setup
+local Window = Library:CreateWindow({
+    Title = 'Wizard West | Aimlock',
+    Center = true,
+    AutoShow = true,
+})
+
+local Tabs = {
+    Main = Window:AddTab('Main'),
+    Config = Window:AddTab('Config')
+}
+
+local AimGroup = Tabs.Main:AddLeftGroupbox('Aimlock')
+
+AimGroup:AddToggle('AimEnabled', {
+    Text = 'Activar Aimlock',
+    Default = true,
+    Callback = function(Value)
+        getgenv().AimEnabled = Value
+    end
+})
+
+AimGroup:AddSlider('FOVSlider', {
+    Text = 'FOV',
+    Default = 100,
+    Min = 50,
+    Max = 200,
+    Rounding = 0,
+    Suffix = 'px',
+    Callback = function(Value)
+        getgenv().MAX_FOV = Value
+        if FOVCircle then
+            FOVCircle.Radius = Value
+        end
+    end
+})
+
+AimGroup:AddSlider('SmoothSlider', {
+    Text = 'Smoothness',
+    Default = 0.15,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(Value)
+        getgenv().SMOOTHNESS = Value
+    end
+})
+
+-- Managers
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+
+SaveManager:BuildConfigSection(Tabs.Config)
+ThemeManager:ApplyToTab(Tabs.Config)
